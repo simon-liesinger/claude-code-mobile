@@ -3,9 +3,10 @@ package com.claudecode.mobile
 import android.content.Context
 import android.content.SharedPreferences
 import android.net.Uri
-import okhttp3.FormBody
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 import java.security.MessageDigest
 import java.security.SecureRandom
@@ -25,7 +26,7 @@ class OAuthManager(context: Context) {
         private const val AUTH_URL = "https://claude.ai/oauth/authorize"
         private const val TOKEN_URL = "https://console.anthropic.com/v1/oauth/token"
         private const val REDIRECT_URI = "https://console.anthropic.com/oauth/code/callback"
-        private const val SCOPES = "user:inference user:profile"
+        private const val SCOPES = "user:profile user:inference user:sessions:claude_code"
     }
 
     private val prefs: SharedPreferences = context.getSharedPreferences("claude_oauth", 0)
@@ -68,18 +69,21 @@ class OAuthManager(context: Context) {
     fun exchangeCode(authorizationCode: String): OAuthTokens {
         val verifier = codeVerifier ?: prefs.getString("code_verifier", null)
             ?: throw IllegalStateException("No code verifier found - restart OAuth flow")
+        val state = prefs.getString("oauth_state", null) ?: ""
 
-        val formBody = FormBody.Builder()
-            .add("grant_type", "authorization_code")
-            .add("code", authorizationCode.trim())
-            .add("redirect_uri", REDIRECT_URI)
-            .add("client_id", CLIENT_ID)
-            .add("code_verifier", verifier)
-            .build()
+        val jsonBody = JSONObject().apply {
+            put("grant_type", "authorization_code")
+            put("code", authorizationCode.trim())
+            put("redirect_uri", REDIRECT_URI)
+            put("client_id", CLIENT_ID)
+            put("code_verifier", verifier)
+            put("state", state)
+        }
 
         val request = Request.Builder()
             .url(TOKEN_URL)
-            .post(formBody)
+            .addHeader("Content-Type", "application/json")
+            .post(jsonBody.toString().toRequestBody("application/json".toMediaType()))
             .build()
 
         val response = httpClient.newCall(request).execute()
@@ -104,15 +108,17 @@ class OAuthManager(context: Context) {
         val refreshToken = prefs.getString("refresh_token", null)
             ?: throw Exception("No refresh token - please log in again")
 
-        val formBody = FormBody.Builder()
-            .add("grant_type", "refresh_token")
-            .add("refresh_token", refreshToken)
-            .add("client_id", CLIENT_ID)
-            .build()
+        val jsonBody = JSONObject().apply {
+            put("grant_type", "refresh_token")
+            put("refresh_token", refreshToken)
+            put("client_id", CLIENT_ID)
+            put("scope", SCOPES)
+        }
 
         val request = Request.Builder()
             .url(TOKEN_URL)
-            .post(formBody)
+            .addHeader("Content-Type", "application/json")
+            .post(jsonBody.toString().toRequestBody("application/json".toMediaType()))
             .build()
 
         val response = httpClient.newCall(request).execute()
