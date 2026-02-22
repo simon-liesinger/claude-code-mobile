@@ -24,7 +24,13 @@ data class ApiResponse(
     val outputTokens: Int
 )
 
-class AnthropicClient(private val apiKey: String) {
+class AnthropicClient(
+    private val oAuthManager: OAuthManager? = null,
+    private val apiKey: String? = null
+) {
+    init {
+        require(oAuthManager != null || apiKey != null) { "Must provide either OAuthManager or API key" }
+    }
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(30, TimeUnit.SECONDS)
@@ -48,11 +54,20 @@ class AnthropicClient(private val apiKey: String) {
             put("tools", tools)
         }
 
-        val request = Request.Builder()
+        val requestBuilder = Request.Builder()
             .url(baseUrl)
-            .addHeader("x-api-key", apiKey)
             .addHeader("anthropic-version", "2023-06-01")
             .addHeader("content-type", "application/json")
+
+        if (oAuthManager != null) {
+            val token = oAuthManager.getValidAccessToken()
+            requestBuilder.addHeader("Authorization", "Bearer $token")
+            requestBuilder.addHeader("anthropic-beta", "oauth-2025-04-20")
+        } else {
+            requestBuilder.addHeader("x-api-key", apiKey!!)
+        }
+
+        val request = requestBuilder
             .post(requestBody.toString().toRequestBody("application/json".toMediaType()))
             .build()
 
@@ -60,6 +75,11 @@ class AnthropicClient(private val apiKey: String) {
         val body = response.body?.string() ?: throw IOException("Empty response body")
 
         if (!response.isSuccessful) {
+            // If 401 with OAuth, try refreshing token and retry once
+            if (response.code == 401 && oAuthManager != null) {
+                oAuthManager.refreshTokens()
+                return sendMessage(messages, systemPrompt, tools)
+            }
             throw IOException("API error ${response.code}: $body")
         }
 

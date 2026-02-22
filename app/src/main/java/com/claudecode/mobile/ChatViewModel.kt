@@ -22,12 +22,23 @@ data class ChatMessage(
 class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     private val prefs = application.getSharedPreferences("claude_code", 0)
+    val oAuthManager = OAuthManager(application)
 
     val messages = mutableStateListOf<ChatMessage>()
     val isLoading = mutableStateOf(false)
-    val apiKey = mutableStateOf(prefs.getString("api_key", "") ?: "")
-    val isSetup = mutableStateOf(apiKey.value.isNotEmpty())
     val tokenCount = mutableStateOf(0 to 0)
+
+    // Auth state
+    val authMode = mutableStateOf(
+        when {
+            oAuthManager.isLoggedIn -> "oauth"
+            prefs.getString("api_key", "")?.isNotEmpty() == true -> "apikey"
+            else -> ""
+        }
+    )
+    val isSetup = mutableStateOf(authMode.value.isNotEmpty())
+    val oAuthPending = mutableStateOf(false)
+    val authError = mutableStateOf<String?>(null)
 
     private var client: AnthropicClient? = null
     val toolExecutor = ToolExecutor(application)
@@ -78,11 +89,42 @@ To build Android apps on this device:
 - If a command fails, try alternative approaches before giving up.
 """.trimIndent()
 
+    fun getOAuthUrl(): String = oAuthManager.buildAuthUrl()
+
+    fun completeOAuth(code: String) {
+        viewModelScope.launch {
+            authError.value = null
+            isLoading.value = true
+            try {
+                withContext(Dispatchers.IO) {
+                    oAuthManager.exchangeCode(code)
+                }
+                client = AnthropicClient(oAuthManager = oAuthManager)
+                authMode.value = "oauth"
+                isSetup.value = true
+                oAuthPending.value = false
+            } catch (e: Exception) {
+                authError.value = e.message
+            } finally {
+                isLoading.value = false
+            }
+        }
+    }
+
     fun saveApiKey(key: String) {
-        apiKey.value = key
         prefs.edit().putString("api_key", key).apply()
-        client = AnthropicClient(key)
+        client = AnthropicClient(apiKey = key)
+        authMode.value = "apikey"
         isSetup.value = true
+    }
+
+    fun logout() {
+        oAuthManager.clearTokens()
+        prefs.edit().remove("api_key").apply()
+        client = null
+        authMode.value = ""
+        isSetup.value = false
+        clearHistory()
     }
 
     fun clearHistory() {
@@ -110,15 +152,36 @@ To build Android apps on this device:
                     runConversationLoop()
                 }
             } catch (e: Exception) {
-                messages.add(ChatMessage("assistant", "Error: ${e.message}", isError = true))
+                val msg = e.message ?: "Unknown error"
+                if (msg.contains("Session expired") || msg.contains("log in again")) {
+                    authError.value = msg
+                    isSetup.value = false
+                    authMode.value = ""
+                }
+                messages.add(ChatMessage("assistant", "Error: $msg", isError = true))
             } finally {
                 isLoading.value = false
             }
         }
     }
 
+    private fun getOrCreateClient(): AnthropicClient {
+        client?.let { return it }
+
+        val newClient = when (authMode.value) {
+            "oauth" -> AnthropicClient(oAuthManager = oAuthManager)
+            "apikey" -> {
+                val key = prefs.getString("api_key", "") ?: ""
+                AnthropicClient(apiKey = key)
+            }
+            else -> throw Exception("Not authenticated")
+        }
+        client = newClient
+        return newClient
+    }
+
     private fun runConversationLoop() {
-        val apiClient = client ?: AnthropicClient(apiKey.value).also { client = it }
+        val apiClient = getOrCreateClient()
         val tools = apiClient.buildToolDefinitions()
 
         var iterations = 0
