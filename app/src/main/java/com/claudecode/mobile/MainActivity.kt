@@ -231,7 +231,7 @@ fun SetupScreen(viewModel: ChatViewModel) {
                 } else {
                     // OAuth code entry
                     Text(
-                        "Log in via browser, then paste the code below:",
+                        "Paste the authorization code or the full callback URL:",
                         color = Color(0xFFaaaaaa),
                         fontSize = 13.sp,
                         textAlign = TextAlign.Center
@@ -252,7 +252,7 @@ fun SetupScreen(viewModel: ChatViewModel) {
                             cursorColor = Color(0xFFcc785c)
                         ),
                         singleLine = true,
-                        placeholder = { Text("Paste code here...", color = Color(0xFF444444)) }
+                        placeholder = { Text("Code or URL...", color = Color(0xFF444444)) }
                     )
 
                     Row(
@@ -275,7 +275,7 @@ fun SetupScreen(viewModel: ChatViewModel) {
 
                         Button(
                             onClick = { viewModel.completeOAuth(authCode.trim()) },
-                            enabled = authCode.trim().length > 10 && !viewModel.isLoading.value,
+                            enabled = authCode.trim().length > 5 && !viewModel.isLoading.value,
                             modifier = Modifier.weight(1f),
                             colors = ButtonDefaults.buttonColors(
                                 containerColor = Color(0xFFcc785c),

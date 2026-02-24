@@ -26,7 +26,7 @@ class OAuthManager(context: Context) {
         private const val AUTH_URL = "https://claude.ai/oauth/authorize"
         private const val TOKEN_URL = "https://console.anthropic.com/v1/oauth/token"
         private const val REDIRECT_URI = "https://console.anthropic.com/oauth/code/callback"
-        private const val SCOPES = "user:profile user:inference user:sessions:claude_code"
+        private const val SCOPES = "org:create_api_key user:profile user:inference user:sessions:claude_code"
     }
 
     private val prefs: SharedPreferences = context.getSharedPreferences("claude_oauth", 0)
@@ -46,7 +46,6 @@ class OAuthManager(context: Context) {
     fun buildAuthUrl(): String {
         val verifier = generateCodeVerifier()
         codeVerifier = verifier
-        // Also persist it in case the app is killed during auth
         prefs.edit().putString("code_verifier", verifier).apply()
 
         val challenge = generateCodeChallenge(verifier)
@@ -66,14 +65,31 @@ class OAuthManager(context: Context) {
             .toString()
     }
 
-    fun exchangeCode(authorizationCode: String): OAuthTokens {
+    /**
+     * Extract and clean the authorization code from user input.
+     * Handles: raw code, full callback URL, invisible chars.
+     */
+    fun extractCode(input: String): String {
+        // Strip all non-printable/non-ASCII characters and whitespace
+        val cleaned = input.replace(Regex("[^\\x20-\\x7E]"), "").trim()
+        // If user pasted the full callback URL, extract the code parameter
+        if (cleaned.startsWith("http")) {
+            // Use manual parsing to avoid Uri treating # as fragment delimiter
+            val codeParam = Regex("[?&]code=([^&]+)").find(cleaned)
+            if (codeParam != null) return codeParam.groupValues[1]
+        }
+        return cleaned
+    }
+
+    fun exchangeCode(rawInput: String): OAuthTokens {
+        val authorizationCode = extractCode(rawInput)
         val verifier = codeVerifier ?: prefs.getString("code_verifier", null)
             ?: throw IllegalStateException("No code verifier found - restart OAuth flow")
         val state = prefs.getString("oauth_state", null) ?: ""
 
         val jsonBody = JSONObject().apply {
             put("grant_type", "authorization_code")
-            put("code", authorizationCode.trim())
+            put("code", authorizationCode)
             put("redirect_uri", REDIRECT_URI)
             put("client_id", CLIENT_ID)
             put("code_verifier", verifier)
@@ -90,7 +106,7 @@ class OAuthManager(context: Context) {
         val body = response.body?.string() ?: throw Exception("Empty response from token endpoint")
 
         if (!response.isSuccessful) {
-            throw Exception("Token exchange failed (${response.code}): $body")
+            throw Exception("Token exchange failed (${response.code}): $body\n\n[Debug]\nraw_input(${rawInput.length})=$rawInput\nextracted(${authorizationCode.length})=$authorizationCode\nverifier=$verifier\nstate=$state\nrequest_body=${jsonBody.toString()}")
         }
 
         val json = JSONObject(body)
@@ -125,7 +141,6 @@ class OAuthManager(context: Context) {
         val body = response.body?.string() ?: throw Exception("Empty response from token endpoint")
 
         if (!response.isSuccessful) {
-            // Refresh token expired - need full re-auth
             if (response.code == 400 || response.code == 401) {
                 clearTokens()
                 throw Exception("Session expired - please log in again")
@@ -146,7 +161,6 @@ class OAuthManager(context: Context) {
 
     fun isTokenExpired(): Boolean {
         val expiresAt = prefs.getLong("expires_at", 0)
-        // Refresh 5 minutes before expiry
         return System.currentTimeMillis() > (expiresAt - 300_000)
     }
 
@@ -174,7 +188,7 @@ class OAuthManager(context: Context) {
     private fun generateCodeVerifier(): String = generateRandomString(64)
 
     private fun generateCodeChallenge(verifier: String): String {
-        val bytes = MessageDigest.getInstance("SHA-256").digest(verifier.toByteArray())
+        val bytes = MessageDigest.getInstance("SHA-256").digest(verifier.toByteArray(Charsets.US_ASCII))
         return Base64.getUrlEncoder().withoutPadding().encodeToString(bytes)
     }
 
